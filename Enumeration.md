@@ -549,3 +549,365 @@ Initial enumeration should be performed systematically before attempting privile
 The information collected during this stage helps identify potential attack surfaces, misconfigurations, excessive privileges, vulnerable services, and security restrictions.
 
 **Remember:** Enumeration is not exploitation. Finding a suspicious configuration does not automatically mean that it is exploitable. Every potential vector requires further investigation and validation.
+
+Process → Access Token → Inter-Process Communication (IPC)
+# 2. Communication with Processes
+
+One of the important areas to investigate during Windows privilege escalation is the communication between running processes.
+
+Even if a process does not run with administrative privileges, it may provide an opportunity to obtain a higher level of access through its security context, exposed interfaces, or misconfigured communication mechanisms.
+
+For example, a web server such as IIS or XAMPP may run under a dedicated service account. If an attacker obtains code execution through a vulnerable web application, the resulting shell will typically run under the identity of the web server process.
+
+Although this account may not have administrative privileges, it could possess powerful Windows privileges such as `SeImpersonatePrivilege`.
+
+Under certain conditions, this privilege can be abused through techniques associated with Rogue Potato, Juicy Potato, or PrintSpoofer to obtain `NT AUTHORITY\SYSTEM`.
+
+**Important:** These techniques are version- and configuration-dependent. Having `SeImpersonatePrivilege` does not automatically guarantee SYSTEM access.
+
+---
+
+## Contents
+
+1. [Access Tokens](#1-access-tokens)
+2. [Network Connections and Local Services](#2-network-connections-and-local-services)
+3. [Named and Anonymous Pipes](#3-named-and-anonymous-pipes)
+   - [Understanding Named Pipes](#understanding-named-pipes)
+   - [Enumerating Named Pipes](#enumerating-named-pipes)
+   - [Inspecting Pipe Permissions](#inspecting-pipe-permissions)
+4. [Key Takeaways](#4-key-takeaways)
+
+---
+
+## 1. Access Tokens
+
+Windows Access Tokens define the security context of a process or thread.
+
+An access token contains information about the identity of the user and the security permissions associated with that identity.
+
+When a user successfully authenticates to Windows, the operating system creates an access token representing that user's security context.
+
+When a process is created, it receives a primary access token. Threads can also use impersonation tokens to temporarily operate under another security context.
+
+Windows uses these tokens to determine which resources a process or thread can access and which operations it is permitted to perform.
+
+### Important Access Token Components
+
+| Component | Description |
+|---|---|
+| User SID | Identifies the user account associated with the token. |
+| Group SIDs | Identifies the security groups associated with the token. |
+| Privileges | Defines special rights assigned to the token. |
+| Integrity Level | Represents the process's integrity level, such as Low, Medium, High, or System. |
+| Token Type | Indicates whether the token is primary or impersonation. |
+| Restricted SIDs | Can limit the security access available to the token. |
+
+### Primary Token vs. Impersonation Token
+
+**Primary Token**
+
+A primary token is normally associated with a process and defines the security context under which that process operates.
+
+**Impersonation Token**
+
+An impersonation token allows a thread to temporarily operate using another security identity.
+
+This mechanism is commonly used by Windows services when handling requests from clients.
+
+### Why Access Tokens Matter for Privilege Escalation
+
+Some Windows privileges can provide opportunities to perform operations beyond the permissions normally associated with a user account.
+
+For example:
+
+| Privilege | Relevance |
+|---|---|
+| `SeImpersonatePrivilege` | May allow a process to impersonate another security identity under applicable conditions. |
+| `SeAssignPrimaryTokenPrivilege` | May allow assigning a primary token to a process. |
+| `SeDebugPrivilege` | Can provide extensive access to other processes. |
+| `SeBackupPrivilege` | Can allow access to protected files through backup operations. |
+
+### Enumeration Commands
+
+**CMD**
+
+```cmd
+whoami /all
+```
+
+Displays the current user's security context, group memberships, and assigned privileges.
+
+```cmd
+whoami /priv
+```
+
+Displays the privileges assigned to the current access token.
+
+**PowerShell**
+
+```powershell
+Get-Process -IncludeUserName
+```
+
+Displays running processes and their associated usernames where permissions allow.
+
+### What to Look For
+
+- Processes running under privileged service accounts.
+- Processes running as `NT AUTHORITY\SYSTEM`.
+- Accounts with `SeImpersonatePrivilege`.
+- Accounts with `SeAssignPrimaryTokenPrivilege`.
+- Differences between primary and impersonation tokens.
+
+---
+
+## 2. Network Connections and Local Services
+
+Another useful approach is examining active network connections to identify services running on the target machine.
+
+Some applications expose administrative interfaces or management services through local network sockets.
+
+### Command
+
+**CMD**
+
+```cmd
+netstat -ano
+```
+
+Displays active TCP connections, listening ports, and associated process IDs.
+
+### Understanding Listening Addresses
+
+Pay particular attention to the addresses on which services are listening.
+
+| Address | Meaning |
+|---|---|
+| `127.0.0.1` | IPv4 loopback address. |
+| `::1` | IPv6 loopback address. |
+| `0.0.0.0` | Listening on all available IPv4 interfaces. |
+| `::` | IPv6 wildcard address. |
+| Specific IP | Listening on a particular network interface. |
+
+### Why Loopback Services Are Interesting
+
+Services listening on `127.0.0.1` or `::1` are generally accessible only from the local machine.
+
+Administrators sometimes assume that local-only services are safe because they cannot be accessed directly from external network hosts.
+
+However, a compromised local process may still be able to communicate with these services.
+
+If a local service exposes an administrative interface without sufficient authentication or authorization, it may provide an additional attack surface.
+
+### Example: FileZilla Server
+
+In some FileZilla Server configurations, TCP port `14147` has been used for the administrative interface.
+
+If this port appears in the network enumeration results, it may be worth investigating.
+
+**Enumeration:**
+
+```cmd
+netstat -ano | findstr 14147
+```
+
+Identify the associated process:
+
+```cmd
+tasklist /FI "PID eq 1234"
+```
+
+Replace `1234` with the actual PID.
+
+### What to Investigate
+
+- Whether the service is listening on localhost or external interfaces.
+- Whether authentication is required.
+- Whether administrative access is restricted.
+- Which user account runs the service.
+- Whether the application contains misconfigurations.
+- Whether the service allows privileged administrative operations.
+
+**Important:** Finding an open local port does not automatically indicate a vulnerability. The actual application configuration and access controls must be investigated.
+
+---
+
+## 3. Named and Anonymous Pipes
+
+Pipes are Windows Inter-Process Communication (IPC) mechanisms that allow processes to exchange data.
+
+They are commonly used by Windows services and applications to communicate with other processes.
+
+There are two main types:
+
+- Named Pipes
+- Anonymous Pipes
+
+### Understanding Named Pipes
+
+Named Pipes provide a communication channel between processes.
+
+They can be used by processes running on the same computer or, depending on configuration, across a network.
+
+A named pipe has a name that allows client processes to identify and connect to it.
+
+Example:
+
+```text
+\\.\pipe\ExampleNamedPipe
+```
+
+Windows uses a client-server communication model for named pipes:
+
+- **Server:** The process that creates and manages the named pipe.
+- **Client:** The process that connects to the named pipe and communicates with the server.
+
+### Communication Types
+
+Named Pipes support two main communication modes.
+
+**Half-Duplex**
+
+A one-way communication channel in which data flows in one direction at a time.
+
+**Full-Duplex**
+
+A two-way communication channel that allows both the client and server to send and receive data.
+
+A named pipe can also have multiple instances, allowing multiple clients to connect to separate instances associated with the same pipe name.
+
+### Anonymous Pipes
+
+Anonymous Pipes are another IPC mechanism used for communication between processes.
+
+Unlike named pipes, anonymous pipes do not have a publicly addressable name.
+
+They are commonly used for one-way communication, such as redirecting the output of one process into another process.
+
+For example:
+
+```cmd
+ipconfig | findstr IPv4
+```
+
+In this example, the output of `ipconfig` is passed to `findstr` through a pipe.
+
+---
+
+### Enumerating Named Pipes
+
+During privilege escalation assessments, identifying existing named pipes can reveal communication channels used by Windows services and applications.
+
+**PowerShell**
+
+```powershell
+Get-ChildItem \\.\pipe\
+```
+
+Alternatively, using the shorter PowerShell alias:
+
+```powershell
+gci \\.\pipe\
+```
+
+Both commands enumerate named pipes accessible through the current security context.
+
+**Sysinternals PipeList**
+
+Microsoft Sysinternals provides a utility called PipeList that can enumerate named pipes.
+
+```cmd
+pipelist.exe /accepteula
+```
+
+This displays information about named pipes currently available on the system.
+
+### What to Look For
+
+- Pipes associated with privileged Windows services.
+- Pipes created by third-party applications.
+- Unusual or application-specific pipe names.
+- Pipes that may expose administrative functionality.
+- Communication channels with potentially weak access permissions.
+
+---
+
+### Inspecting Pipe Permissions
+
+Finding a named pipe is only the first step.
+
+The next step is determining which users and groups have permission to access it.
+
+Windows uses security descriptors and Discretionary Access Control Lists (DACLs) to control access to named pipes.
+
+A DACL contains Access Control Entries (ACEs) that specify which security principals are allowed or denied particular operations.
+
+These permissions may include:
+
+- Reading data.
+- Writing data.
+- Creating pipe instances.
+- Connecting to a pipe.
+- Modifying security settings.
+
+### AccessChk
+
+Microsoft Sysinternals provides AccessChk, a utility used to inspect effective permissions on Windows objects.
+
+It can help identify whether a particular user or group has excessive permissions over a named pipe.
+
+**Enumerate permissions for all named pipes:**
+
+```cmd
+accesschk.exe /accepteula \\.\Pipe\
+```
+
+**Inspect a specific named pipe:**
+
+```cmd
+accesschk.exe /accepteula -v \\.\Pipe\lsass
+```
+
+The `-v` option provides verbose information about the object's permissions.
+
+### Understanding the Output
+
+When reviewing AccessChk results, pay attention to:
+
+| Permission | Description |
+|---|---|
+| Read | Allows reading permitted information from the object. |
+| Write | Allows writing data where permitted. |
+| Read/Write | Provides both reading and writing access. |
+| Full Control | May allow extensive operations, depending on the object and granted rights. |
+
+### What to Look For
+
+- Permissions granted to `Everyone`.
+- Permissions granted to `Authenticated Users`.
+- Unexpected write access.
+- Excessive permissions granted to ordinary users.
+- Pipes associated with privileged services.
+- Security configurations that allow unauthorized clients to communicate with sensitive services.
+
+**Important:** Write access to a named pipe does not automatically provide privilege escalation. The server application's behavior, authentication requirements, and handling of client requests determine whether the permissions can be abused.
+
+---
+
+## 4. Key Takeaways
+
+Process communication can expose additional attack surfaces during Windows privilege escalation assessments.
+
+Understanding access tokens helps identify the security context of running processes, while examining network connections and named pipes can reveal interfaces through which processes communicate.
+
+| Area | Main Objective |
+|---|---|
+| Access Tokens | Understand process and thread security contexts. |
+| Primary Tokens | Identify the security identity assigned to processes. |
+| Impersonation Tokens | Understand how threads can operate under another identity. |
+| Network Connections | Identify local services and exposed interfaces. |
+| Named Pipes | Discover IPC channels between processes. |
+| Anonymous Pipes | Understand basic one-way process communication. |
+| AccessChk | Inspect permissions assigned to Windows objects. |
+
+**Key Takeaway:** A process does not necessarily need to run as Administrator to become a useful privilege escalation entry point. Its access token, privileges, exposed interfaces, and communication permissions may reveal additional opportunities.
