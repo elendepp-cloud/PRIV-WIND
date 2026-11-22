@@ -1,723 +1,613 @@
-# Windows Privilege Escalation
+# Network Enumeration & Exploitation Cheat Sheet
+389	LDAP	Directory Services
+443	HTTPS	Secure Web Server
+445	SMB	Server Message Block
+464	Kerberos	Password Change
+636	LDAPS	Secure LDAP
+1433	MSSQL	Microsoft SQL Server
+3268	Global Catalog	Active Directory
+3269	Global Catalog SSL	Secure Active Directory
+3389	RDP	Remote Desktop
+5985	WinRM	Windows Remote Management
+5986	WinRM HTTPS	Secure Remote Management
+9389	ADWS	Active Directory Web Services
 
-A practical guide to Windows privilege escalation, system enumeration, process communication, service misconfigurations, and common security weaknesses.
+A practical reference for network reconnaissance, service enumeration, authentication testing, and remote access in authorized penetration testing labs.
 
-# Contents
+## 1. Network Scanning — Nmap
 
-1. [Initial Enumeration](#1-initial-enumeration)
-2. [Communication with Processes](#2-communication-with-processes)
-3. [Windows Services](#3-windows-services)
-4. [Scheduled Tasks](#4-scheduled-tasks)
-5. [File and Directory Permissions](#5-file-and-directory-permissions)
-6. [Registry Enumeration](#6-registry-enumeration)
-7. [Credential Hunting](#7-credential-hunting)
-8. [Token Impersonation](#8-token-impersonation)
-9. [Automated Enumeration Tools](#9-automated-enumeration-tools)
-10. [Privilege Escalation Workflow](#10-privilege-escalation-workflow)
+### Basic scan
+
+```bash
+nmap <IP>
+```
+
+### Service and version detection
+
+```bash
+nmap -sC -sV <IP>
+```
+
+### Scan all TCP ports
+
+```bash
+nmap -p- --min-rate 1000 <IP>
+```
+
+### Scan specific ports
+
+```bash
+nmap -p 21,22,53,80,88,135,139,389,443,445,1433,3389,5985,5986 <IP>
+```
+
+### UDP scan
+
+```bash
+sudo nmap -sU --top-ports 100 <IP>
+```
+
+### Save results
+
+```bash
+nmap -sC -sV -oN scan.txt <IP>
+```
 
 ---
 
-# 3. Windows Services
+## 2. SMB — Server Message Block
 
-Windows Services are background processes that perform specific system or application-related tasks.
+**Ports:** 445, 139
 
-Unlike regular applications, services can operate without an interactive user session and may run under highly privileged accounts.
+SMB is used for file sharing, network communication, and access to shared resources.
 
-Some services operate as:
+### Nmap enumeration
 
-- `NT AUTHORITY\SYSTEM`
-- `NT AUTHORITY\LOCAL SERVICE`
-- `NT AUTHORITY\NETWORK SERVICE`
-- Dedicated service accounts
-- Local or domain administrator accounts
-
-A misconfigured service may create a privilege escalation opportunity if a lower-privileged user can modify its executable, configuration, or service permissions.
-
-## 3.1. Service Enumeration
-
-**CMD**
-
-```cmd
-sc query
+```bash
+nmap -p 445 --script smb-protocols <IP>
+nmap -p 445 --script smb-os-discovery <IP>
+nmap -p 445 --script smb-enum-shares <IP>
+nmap -p 445 --script smb-enum-users <IP>
 ```
 
-Lists services and their current states.
+### smbclient
 
-```cmd
-sc query state= all
+List shares without credentials:
+
+```bash
+smbclient -L //<IP>/ -N
 ```
 
-Displays all services, including stopped services.
+Connect to a share:
 
-```cmd
-sc qc <SERVICE_NAME>
+```bash
+smbclient //<IP>/<SHARE> -U <USER>
 ```
 
-Displays the configuration of a specific service.
-
-**PowerShell**
-
-```powershell
-Get-Service
-```
-
-Lists installed services.
-
-```powershell
-Get-Service | Where-Object {$_.Status -eq "Running"}
-```
-
-Displays currently running services.
-
-```powershell
-Get-CimInstance Win32_Service |
-Select-Object Name, DisplayName, State, StartName, PathName
-```
-
-Displays service names, execution accounts, states, and executable paths.
-
-## 3.2. Identifying Privileged Services
-
-One important task is identifying services running under highly privileged accounts.
-
-```powershell
-Get-CimInstance Win32_Service |
-Where-Object {$_.StartName -eq "LocalSystem"} |
-Select-Object Name, State, StartName, PathName
-```
-
-This identifies services running as LocalSystem.
-
-**What to Look For**
-
-- Services running as SYSTEM.
-- Services running under administrator accounts.
-- Unusual third-party services.
-- Services with writable executable files.
-- Services with weak permissions.
-- Unquoted service paths.
-
-**Important:** A service running as SYSTEM is not automatically vulnerable. The important question is whether the current user can influence its execution or configuration.
-
-## 3.3. Unquoted Service Paths
-
-Windows services can contain executable paths with spaces.
-
-Consider the following example:
+Useful commands inside smbclient:
 
 ```text
-C:\Program Files\My Application\service.exe
+ls
+cd <directory>
+get <file>
+put <file>
+mget *
+recurse ON
+prompt OFF
+exit
 ```
 
-If the executable path is not enclosed in quotation marks, Windows may interpret the path ambiguously when resolving the executable.
+### NetExec (nxc)
 
-For example, it may attempt intermediate executable locations such as:
+Check SMB:
 
-```text
-C:\Program.exe
-C:\Program Files\My.exe
-C:\Program Files\My Application\service.exe
+```bash
+nxc smb <IP>
 ```
 
-If a lower-privileged user can write to an appropriate intermediate directory, this configuration may create a privilege escalation opportunity.
+Authenticate:
 
-**Enumeration**
-
-```powershell
-Get-CimInstance Win32_Service |
-Select-Object Name, PathName, StartName
+```bash
+nxc smb <IP> -u <USER> -p '<PASS>'
 ```
 
-**Check directory permissions**
+Enumerate users:
 
-```cmd
-icacls "C:\Program Files"
+```bash
+nxc smb <DC_IP> -u <USER> -p '<PASS>' --users
 ```
 
-**What to Look For**
+Enumerate groups:
 
-- Executable paths containing spaces.
-- Missing quotation marks.
-- Writable intermediate directories.
-- Services running with elevated privileges.
-
-**Important:** An unquoted service path alone is not sufficient. The relevant directory must be writable, and the service must execute under a sufficiently privileged account.
-
-## 3.4. Weak Service Permissions
-
-Windows controls service permissions through security descriptors.
-
-If an ordinary user has excessive permissions over a privileged service, they may be able to modify its configuration or behavior.
-
-**Inspect Service Configuration**
-
-```cmd
-sc qc <SERVICE_NAME>
+```bash
+nxc smb <DC_IP> -u <USER> -p '<PASS>' --groups
 ```
 
-**Inspect Service Permissions with AccessChk**
+Enumerate password policy:
 
-```cmd
-accesschk.exe -uwcqv "Authenticated Users" *
+```bash
+nxc smb <DC_IP> -u <USER> -p '<PASS>' --pass-pol
 ```
 
-This checks service permissions for the specified security principal.
+Combine enumeration:
 
-**What to Look For**
+```bash
+nxc smb <DC_IP> -u <USER> -p '<PASS>' --users --groups --pass-pol
+```
 
-- Permission to change service configuration.
-- Permission to start or stop sensitive services.
-- Permission to modify service security settings.
-- Unexpected write or modification rights.
+Retrieve SAM hashes (requires appropriate administrative privileges):
 
-**Key Takeaway:** Service permissions and executable file permissions are separate security controls. Both should be investigated.
+```bash
+nxc smb <IP> -u <USER> -p '<PASS>' --sam
+```
+
+Retrieve LSA secrets (requires appropriate administrative privileges):
+
+```bash
+nxc smb <IP> -u <USER> -p '<PASS>' --lsa
+```
+
+### Impacket SMB Client
+
+```bash
+impacket-smbclient <DOMAIN>/<USER>:'<PASS>'@<IP>
+```
+
+### Impacket SMBExec
+
+```bash
+impacket-smbexec <DOMAIN>/<USER>:'<PASS>'@<IP>
+```
+
+Remote command execution generally requires administrative privileges.
+
+### Impacket PsExec
+
+```bash
+impacket-psexec <DOMAIN>/<USER>:'<PASS>'@<IP>
+```
 
 ---
 
-# 4. Scheduled Tasks
+## 3. FTP — File Transfer Protocol
 
-Windows Task Scheduler allows administrators and applications to execute programs or scripts automatically.
+**Port:** 21
 
-Tasks can run at specific times, during system startup, when a user logs in, or when particular events occur.
+FTP is used to transfer files between a client and a server.
 
-Some scheduled tasks operate with elevated privileges, including SYSTEM.
+### Enumeration
 
-If a lower-privileged user can modify a script or executable used by an elevated scheduled task, it may create a privilege escalation opportunity.
-
-## 4.1. Enumerating Scheduled Tasks
-
-**CMD**
-
-```cmd
-schtasks /query
+```bash
+nmap -p 21 -sC -sV <IP>
 ```
 
-Lists scheduled tasks.
+Check anonymous access:
 
-```cmd
-schtasks /query /fo LIST /v
+```bash
+nmap -p 21 --script ftp-anon <IP>
 ```
 
-Displays detailed information about scheduled tasks.
+Connect:
 
-**PowerShell**
+```bash
+ftp <IP>
+```
+
+Anonymous login:
+
+```text
+Username: anonymous
+Password: anonymous
+```
+
+### FTP commands
+
+```text
+ls
+pwd
+cd <directory>
+get <file>
+put <file>
+mget *
+mkdir <directory>
+delete <file>
+bye
+```
+
+Check FTP server information:
+
+```bash
+nmap -p 21 --script ftp-syst <IP>
+```
+
+**Note:** Standard FTP does not encrypt credentials or transferred files. Check whether FTPS is supported.
+
+---
+
+## 4. DNS — Domain Name System
+
+**Port:** 53 TCP/UDP
+
+DNS translates domain names into IP addresses and helps identify network infrastructure.
+
+### Basic queries
+
+```bash
+nslookup <DOMAIN>
+dig <DOMAIN>
+```
+
+### Record enumeration
+
+```bash
+dig A <DOMAIN>
+dig AAAA <DOMAIN>
+dig MX <DOMAIN>
+dig NS <DOMAIN>
+dig TXT <DOMAIN>
+```
+
+### Reverse lookup
+
+```bash
+dig -x <IP>
+```
+
+### Zone transfer
+
+```bash
+dig axfr <DOMAIN> @<DNS_SERVER>
+```
+
+A successful zone transfer may reveal internal hostnames, IP addresses, and infrastructure records.
+
+### DNS enumeration tools
+
+```bash
+dnsenum <DOMAIN>
+```
+
+```bash
+dnsrecon -d <DOMAIN>
+```
+
+---
+
+## 5. RDP — Remote Desktop Protocol
+
+**Port:** 3389
+
+RDP provides remote graphical access to Windows systems.
+
+### Scan
+
+```bash
+nmap -p 3389 -sV <IP>
+```
+
+### Connect with FreeRDP
+
+```bash
+xfreerdp3 /v:<IP> /u:<USER> /p:'<PASS>' /cert:ignore
+```
+
+Domain authentication:
+
+```bash
+xfreerdp3 /v:<IP> /u:<DOMAIN>\<USER> /p:'<PASS>' /cert:ignore
+```
+
+### Windows client
 
 ```powershell
-Get-ScheduledTask
+mstsc
 ```
 
-Lists registered scheduled tasks.
+---
 
-```powershell
-Get-ScheduledTask | Where-Object {$_.State -eq "Ready"}
+## 6. WinRM — Windows Remote Management
+
+**Ports:** 5985 (HTTP), 5986 (HTTPS)
+
+WinRM enables remote Windows administration through PowerShell.
+
+### Scan
+
+```bash
+nmap -p 5985,5986 <IP>
 ```
 
-Displays tasks in the Ready state.
+### NetExec
 
-## 4.2. Inspecting Task Details
-
-```powershell
-Get-ScheduledTask | Select-Object TaskName, TaskPath, State
+```bash
+nxc winrm <IP> -u <USER> -p '<PASS>'
 ```
 
-Inspect a specific task:
+### Evil-WinRM
 
-```powershell
-Get-ScheduledTask -TaskName "<TASK_NAME>" |
-Format-List *
+```bash
+evil-winrm -i <IP> -u <USER> -p '<PASS>'
 ```
 
-Display task execution information:
+---
 
-```cmd
-schtasks /query /tn "<TASK_NAME>" /fo LIST /v
+## 7. SSH — Secure Shell
+
+**Port:** 22
+
+SSH provides encrypted remote command-line access.
+
+### Scan
+
+```bash
+nmap -p 22 -sV <IP>
 ```
 
-**What to Look For**
+### Connect
 
-- Tasks running as SYSTEM.
-- Tasks running as administrator accounts.
-- Scripts executed automatically.
-- Executables stored in writable directories.
-- Tasks with weak permissions.
-- Sensitive information stored in scripts.
+```bash
+ssh <USER>@<IP>
+```
 
-## 4.3. Inspecting Scheduled Task Actions
+### Connect using a private key
 
-A scheduled task may execute a PowerShell script, batch file, or executable.
+```bash
+ssh -i <PRIVATE_KEY> <USER>@<IP>
+```
+
+---
+
+## 8. RPC — Remote Procedure Call
+
+**Port:** 135 and dynamic RPC ports
+
+RPC allows Windows services and applications to communicate remotely.
+
+### Connect with rpcclient
+
+```bash
+rpcclient -U "" -N <IP>
+```
+
+Authenticated connection:
+
+```bash
+rpcclient -U '<DOMAIN>/<USER>' <IP>
+```
+
+### Useful commands
+
+```text
+enumdomusers
+enumdomgroups
+querydominfo
+netshareenumall
+```
+
+### enum4linux-ng
+
+```bash
+enum4linux-ng -A <IP>
+```
+
+---
+
+## 9. LDAP — Lightweight Directory Access Protocol
+
+**Ports:** 389 (LDAP), 636 (LDAPS)
+
+LDAP provides access to directory information, including Active Directory objects.
+
+### Scan
+
+```bash
+nmap -p 389,636 <IP>
+```
+
+### RootDSE query
+
+```bash
+ldapsearch -x -H ldap://<IP> -s base
+```
+
+### Search directory information
+
+```bash
+ldapsearch -x -H ldap://<IP> -b '<BASE_DN>'
+```
 
 Example:
 
 ```text
-Action:
-C:\Scripts\backup.ps1
-
-Run As:
-NT AUTHORITY\SYSTEM
+DC=example,DC=local
 ```
 
-If an ordinary user can modify `backup.ps1`, they may be able to influence code executed by the privileged task.
+### Authenticated LDAP query
 
-Check file permissions:
-
-```cmd
-icacls C:\Scripts\backup.ps1
+```bash
+ldapsearch -x -H ldap://<IP> -D '<USER>@<DOMAIN>' -W -b '<BASE_DN>'
 ```
 
-**Important:** The task must actually execute the modified file, and the user must have the required access. A SYSTEM task alone does not establish a vulnerability.
+Use LDAPS or another protected configuration when handling credentials.
 
 ---
 
-# 5. File and Directory Permissions
+## 10. Kerberos
 
-Windows uses Access Control Lists (ACLs) to determine which users and groups can access files and directories.
+**Ports:** 88, 464
 
-During privilege escalation, inspecting file permissions is important because privileged processes may execute files that ordinary users can modify.
+Kerberos is an authentication protocol commonly used in Active Directory environments.
 
-## 5.1. Understanding Windows Permissions
+### Scan
 
-| Permission | Description |
-|---|---|
-| Read | Allows reading file contents. |
-| Write | Allows modifying file contents. |
-| Modify | Allows reading, writing, and deleting. |
-| Read & Execute | Allows reading and executing files. |
-| Full Control | Provides extensive access, including permission changes. |
-| Write Data | Allows writing data to a file. |
-| Delete | Allows deleting the object. |
-
-## 5.2. Inspecting File Permissions
-
-```cmd
-icacls C:\Path\To\File
+```bash
+nmap -p 88,464 <IP>
 ```
 
-Example:
-
-```cmd
-icacls C:\Scripts\backup.ps1
-```
-
-Inspect directory permissions:
-
-```cmd
-icacls C:\Scripts
-```
-
-## 5.3. Finding Interesting Files
-
-Search for common configuration files:
-
-```cmd
-where /r C:\ *.config
-```
-
-```cmd
-where /r C:\ *.ini
-```
-
-```cmd
-where /r C:\ *.xml
-```
-
-Search for files containing password references:
-
-```cmd
-findstr /si password *.xml *.ini *.config *.txt
-```
-
-**What to Look For**
-
-- Writable service executables.
-- Writable scheduled task scripts.
-- Configuration files containing credentials.
-- Backup files.
-- Scripts executed with elevated privileges.
-- Sensitive application data.
-
-## 5.4. Important Windows Directories
-
-```text
-C:\Windows\System32\
-C:\Windows\Temp\
-C:\Windows\Tasks\
-C:\ProgramData\
-C:\Program Files\
-C:\Users\
-C:\Users\<USERNAME>\AppData\
-C:\inetpub\wwwroot\
-```
-
-These locations may contain useful system or application information.
-
-Their permissions vary depending on the system configuration.
-
-**Key Takeaway:** A file becomes interesting when its permissions allow a lower-privileged user to influence something that executes with higher privileges.
-
----
-
-# 6. Registry Enumeration
-
-The Windows Registry is a hierarchical database that stores operating system, application, hardware, and user configuration information.
-
-Registry entries can contain:
-
-- Service configurations.
-- Application settings.
-- Startup information.
-- User preferences.
-- Authentication-related configuration.
-- System security policies.
-
-Incorrect registry permissions or exposed configuration values may create security weaknesses.
-
-## 6.1. Registry Structure
-
-| Registry Hive | Description |
-|---|---|
-| HKEY_LOCAL_MACHINE (HKLM) | Machine-wide configuration. |
-| HKEY_CURRENT_USER (HKCU) | Current user's configuration. |
-| HKEY_CLASSES_ROOT (HKCR) | File associations and COM registration. |
-| HKEY_USERS (HKU) | Loaded user profiles. |
-| HKEY_CURRENT_CONFIG (HKCC) | Current hardware profile. |
-
-## 6.2. Enumerating Registry Keys
-
-**CMD**
-
-```cmd
-reg query HKLM\SOFTWARE
-```
-
-```cmd
-reg query HKCU\SOFTWARE
-```
-
-Query a specific key:
-
-```cmd
-reg query "<REGISTRY_PATH>"
-```
-
-**PowerShell**
+### View tickets on Windows
 
 ```powershell
-Get-ChildItem HKLM:\SOFTWARE
+klist
 ```
+
+Purge tickets from the current logon session:
 
 ```powershell
-Get-ChildItem HKCU:\SOFTWARE
+klist purge
 ```
-
-## 6.3. AutoLogon Configuration
-
-Windows can be configured to automatically log in using stored account information.
-
-Inspect the Winlogon registry key:
-
-```cmd
-reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
-```
-
-Important values include:
-
-```text
-DefaultUserName
-DefaultPassword
-AutoAdminLogon
-DefaultDomainName
-```
-
-**What to Look For**
-
-- Exposed credentials.
-- Insecure application configuration.
-- Registry keys writable by ordinary users.
-- Startup-related configuration.
-- Service-related registry settings.
-
-**Important:** Registry values containing credentials should be handled as sensitive information. Never publish actual passwords in reports or repositories.
 
 ---
 
-# 7. Credential Hunting
+## 11. MSSQL — Microsoft SQL Server
 
-Credentials are sometimes stored in configuration files, scripts, application directories, and Windows deployment files.
+**Port:** 1433
 
-Finding exposed credentials may provide access to additional services or accounts.
+MSSQL is Microsoft's relational database management system.
 
-## 7.1. Important Locations
+### Scan
 
-```text
-C:\Windows\Panther\
-C:\Windows\System32\Sysprep\
-C:\ProgramData\
-C:\inetpub\wwwroot\
-C:\Users\<USERNAME>\AppData\Roaming\
-C:\Users\<USERNAME>\Desktop\
-C:\Users\<USERNAME>\Documents\
+```bash
+nmap -p 1433 -sV <IP>
 ```
 
-## 7.2. Common Files
+### Connect with Impacket
 
-```text
-unattend.xml
-sysprep.inf
-web.config
-groups.xml
-app.config
-settings.ini
+```bash
+impacket-mssqlclient <DOMAIN>/<USER>:'<PASS>'@<IP>
 ```
 
-These files may contain application settings or deployment-related information.
+For SQL authentication:
 
-## 7.3. Search for Password References
-
-```cmd
-findstr /si password *.txt *.ini *.xml *.config
+```bash
+impacket-mssqlclient <USER>:'<PASS>'@<IP>
 ```
-
-Search for configuration files:
-
-```cmd
-where /r C:\ *.config
-```
-
-Search for XML files:
-
-```cmd
-where /r C:\ *.xml
-```
-
-## 7.4. Windows Credential Manager
-
-Windows Credential Manager stores credentials used by applications and network services.
-
-Enumerate stored credentials:
-
-```cmd
-cmdkey /list
-```
-
-This displays saved credential targets and associated usernames where available.
-
-**What to Look For**
-
-- Stored credentials.
-- Deployment configuration files.
-- Application passwords.
-- Scripts containing authentication information.
-- Credentials associated with network resources.
-
-**Important:** Never assume that a discovered username and password can be reused everywhere. Authentication and authorization differ between services.
 
 ---
 
-# 8. Token Impersonation
+## 12. HTTP / HTTPS
 
-Windows Access Tokens define the security context of processes and threads.
+**Ports:** 80, 443
 
-Token impersonation is an important Windows security mechanism that allows a thread to temporarily operate using another security identity.
+HTTP and HTTPS are used to access web applications and web services.
 
-Certain privileges may create opportunities for privilege escalation when combined with vulnerable service configurations.
+### Scan
 
-## 8.1. Important Privileges
+```bash
+nmap -p 80,443 -sC -sV <IP>
+```
 
-| Privilege | Description |
+### Check response headers
+
+```bash
+curl -I http://<IP>
+```
+
+### Web directory enumeration
+
+```bash
+gobuster dir -u http://<IP> -w <WORDLIST>
+```
+
+Alternative:
+
+```bash
+ffuf -u http://<IP>/FUZZ -w <WORDLIST>
+```
+
+### Technology detection
+
+```bash
+whatweb http://<IP>
+```
+
+---
+
+## 13. Common Network Enumeration Commands
+
+### Local network information
+
+```bash
+ip a
+```
+
+### Routing table
+
+```bash
+ip route
+```
+
+### ARP / Neighbor table
+
+```bash
+ip neigh
+```
+
+### Active connections
+
+```bash
+ss -antup
+```
+
+### DNS lookup
+
+```bash
+nslookup <DOMAIN>
+```
+
+### Test connectivity
+
+```bash
+ping <IP>
+```
+
+### Trace network route
+
+```bash
+traceroute <IP>
+```
+
+---
+
+## 14. Important Tools
+
+| Tool | Purpose |
 |---|---|
-| SeImpersonatePrivilege | Allows impersonating a client under applicable conditions. |
-| SeAssignPrimaryTokenPrivilege | Allows assigning primary process tokens under applicable conditions. |
-| SeDebugPrivilege | Provides extensive debugging access to processes. |
-| SeBackupPrivilege | Allows certain backup operations to bypass file access checks. |
-| SeRestorePrivilege | Allows certain restore operations to bypass file access checks. |
-| SeTakeOwnershipPrivilege | Allows taking ownership of securable objects. |
-
-## 8.2. Enumeration
-
-```cmd
-whoami /priv
-```
-
-```cmd
-whoami /all
-```
-
-## 8.3. Important Techniques to Study
-
-- JuicyPotato
-- RoguePotato
-- PrintSpoofer
-- GodPotato
-- SweetPotato
-
-These techniques are dependent on Windows versions, privileges, service configurations, and available mitigations.
-
-**Key Takeaway:** Token impersonation is not simply about finding a privilege in `whoami /priv`. You must understand how Windows authentication, access tokens, service accounts, and impersonation levels interact.
+| Nmap | Port scanning and service detection |
+| NetExec (nxc) | SMB, LDAP, WinRM and other network enumeration |
+| Impacket | Network protocol and Active Directory utilities |
+| smbclient | SMB share access |
+| smbmap | SMB share enumeration |
+| rpcclient | RPC enumeration |
+| enum4linux-ng | SMB/RPC enumeration |
+| Evil-WinRM | WinRM remote shell |
+| FreeRDP | RDP connection |
+| dig | DNS queries |
+| dnsenum | DNS enumeration |
+| dnsrecon | DNS reconnaissance |
+| ldapsearch | LDAP queries |
+| Gobuster | Web directory enumeration |
+| FFUF | Web fuzzing |
+| WhatWeb | Web technology detection |
 
 ---
 
-# 9. Automated Enumeration Tools
-
-Manual enumeration is important for understanding Windows internals, but automated tools can help identify potential misconfigurations more efficiently.
-
-## 9.1. WinPEAS
-
-WinPEAS is a Windows privilege escalation enumeration tool.
-
-It checks different areas of the operating system for potentially interesting security configurations.
-
-Repository:
-
-https://github.com/peass-ng/PEASS-ng
-
-## 9.2. Seatbelt
-
-Seatbelt is a Windows security enumeration tool developed by SpecterOps.
-
-It collects information about the operating system, users, processes, services, and other security-related configurations.
-
-Repository:
-
-https://github.com/GhostPack/Seatbelt
-
-## 9.3. PowerUp
-
-PowerUp is a PowerShell-based Windows privilege escalation assessment tool.
-
-It checks for common Windows privilege escalation misconfigurations.
-
-Repository:
-
-https://github.com/PowerShellMafia/PowerSploit
-
-## 9.4. AccessChk
-
-AccessChk is a Microsoft Sysinternals utility used to inspect effective permissions on Windows objects.
-
-It can help investigate:
-
-- Files and directories.
-- Registry keys.
-- Services.
-- Named pipes.
-- Other securable objects.
-
-Repository:
-
-https://learn.microsoft.com/en-us/sysinternals/downloads/accesschk
-
-## 9.5. PrivescCheck
-
-PrivescCheck is a PowerShell script that performs Windows privilege escalation checks.
-
-Repository:
-
-https://github.com/itm4n/PrivescCheck
-
-**Important:** Automated tools produce findings that require manual verification. A reported misconfiguration is not necessarily exploitable.
-
----
-
-# 10. Privilege Escalation Workflow
-
-A systematic workflow helps avoid missing important information during a Windows security assessment.
-
-## Step 1 — Initial Enumeration
-
-Identify the operating system, current user, groups, privileges, installed software, and network configuration.
-
-```cmd
-systeminfo
-whoami /all
-hostname
-ipconfig /all
-```
-
-## Step 2 — Process Enumeration
-
-Identify running processes and their execution contexts.
-
-```cmd
-tasklist /v
-tasklist /svc
-```
-
-## Step 3 — Service Enumeration
-
-Inspect service accounts, executable paths, and permissions.
-
-```cmd
-sc query state= all
-```
-
-```powershell
-Get-CimInstance Win32_Service |
-Select-Object Name, State, StartName, PathName
-```
-
-## Step 4 — Scheduled Tasks
-
-Inspect tasks running with elevated privileges.
-
-```cmd
-schtasks /query /fo LIST /v
-```
-
-## Step 5 — File and Registry Permissions
-
-Inspect potentially writable files, directories, and registry keys.
-
-```cmd
-icacls C:\Path\To\File
-```
-
-```cmd
-reg query HKLM\SOFTWARE
-```
-
-## Step 6 — Credential Hunting
-
-Inspect accessible configuration files, stored credentials, and application settings.
-
-```cmd
-cmdkey /list
-```
-
-## Step 7 — Security Privileges
-
-Review the current token and identify potentially relevant privileges.
-
-```cmd
-whoami /priv
-```
-
-## Step 8 — Automated Enumeration
-
-Use tools such as WinPEAS, Seatbelt, and PrivescCheck to identify additional potential attack vectors.
-
-## Step 9 — Validate Findings
-
-Investigate each suspected vulnerability manually.
-
-Determine:
-- What configuration is incorrect?
-- Which permissions are involved?
-- Which account executes the affected component?
-- What conditions are required for exploitation?
-- What is the potential security impact?
-
-## Step 10 — Document and Remediate
-
-Document the vulnerability, evidence, impact, and recommended remediation.
-
----
-
-# Final Notes
-
-Windows privilege escalation requires understanding how the operating system manages users, processes, services, permissions, access tokens, and inter-process communication.
-
-The most important principle is to understand why a configuration is vulnerable rather than simply memorizing exploitation commands.
-
-**Enumeration → Identification → Analysis → Validation → Privilege Escalation → Documentation**
-
-All techniques should be tested only in authorized environments.
+## 15. Network Enumeration Workflow
+
+1. Scan the target with Nmap.
+2. Identify open ports and service versions.
+3. Enumerate each exposed service.
+4. Check for anonymous or guest access where applicable.
+5. Test authorized credentials against relevant services.
+6. Enumerate users, groups, shares, and domain information.
+7. Identify accessible remote-management services.
+8. Document findings and validate potential misconfigurations.
+
+### Important Reminders
+
+- Open ports do not automatically indicate vulnerabilities.
+- Authentication and authorization are different.
+- SMB share permissions and NTFS permissions are separate.
+- SAM and LSA extraction require appropriate privileges.
+- Remote execution tools require sufficient permissions.
+- FTP without TLS can expose credentials and data.
+- DNS zone transfers should only be tested against authorized systems.
+- Never expose real passwords or tokens in public GitHub repositories.
