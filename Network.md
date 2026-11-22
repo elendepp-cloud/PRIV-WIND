@@ -1,58 +1,82 @@
-# Network Enumeration & Exploitation Cheat Sheet
-389	LDAP	Directory Services
-443	HTTPS	Secure Web Server
-445	SMB	Server Message Block
-464	Kerberos	Password Change
-636	LDAPS	Secure LDAP
-1433	MSSQL	Microsoft SQL Server
-3268	Global Catalog	Active Directory
-3269	Global Catalog SSL	Secure Active Directory
-3389	RDP	Remote Desktop
-5985	WinRM	Windows Remote Management
-5986	WinRM HTTPS	Secure Remote Management
-9389	ADWS	Active Directory Web Services
+# Windows Privilege Escalation — Network Ports
 
-A practical reference for network reconnaissance, service enumeration, authentication testing, and remote access in authorized penetration testing labs.
+## 1. Windows Remote Access
 
-## 1. Network Scanning — Nmap
+| Port | Protocol | Service | Purpose |
+|---:|---|---|---|
+| 135 | TCP | MSRPC | Windows Remote Procedure Call |
+| 139 | TCP | NetBIOS-SSN | Legacy SMB communication |
+| 445 | TCP | SMB | File sharing and remote administration |
+| 3389 | TCP/UDP | RDP | Remote Desktop access |
+| 5985 | TCP | WinRM | Remote PowerShell over HTTP |
+| 5986 | TCP | WinRM | Remote PowerShell over HTTPS |
+| 22 | TCP | SSH | Remote command-line access |
 
-### Basic scan
+## 1.2 Active Directory Authentication
+
+| Port | Protocol | Service | Purpose |
+|---:|---|---|---|
+| 88 | TCP/UDP | Kerberos | Domain authentication |
+| 464 | TCP/UDP | Kerberos Password Change | Domain password operations |
+| 389 | TCP/UDP | LDAP | Active Directory queries |
+| 636 | TCP | LDAPS | Secure LDAP |
+| 3268 | TCP | Global Catalog | Forest-wide directory searches |
+| 3269 | TCP | Global Catalog SSL | Secure forest-wide searches |
+
+## 1.3 Windows Name Resolution & Network Services
+
+| Port | Protocol | Service | Purpose |
+|---:|---|---|---|
+| 53 | TCP/UDP | DNS | Domain and host resolution |
+| 137 | UDP | NetBIOS-NS | NetBIOS name resolution |
+| 138 | UDP | NetBIOS-DGM | NetBIOS datagram service |
+| 161 | UDP | SNMP | Network device information |
+| 123 | UDP | NTP | Time synchronization for Kerberos |
+
+## 1.4 Windows Database & Application Services
+
+| Port | Protocol | Service | Purpose |
+|---:|---|---|---|
+| 1433 | TCP | MSSQL | Microsoft SQL Server |
+| 1434 | UDP | MSSQL Browser | SQL Server instance discovery |
+| 80 | TCP | HTTP / IIS | Web applications |
+| 443 | TCP | HTTPS / IIS | Secure web applications |
+
+## 1.5 Important Ports to Remember
+
+| Port | Service |
+|---:|---|
+| 445 | SMB |
+| 3389 | RDP |
+| 5985 | WinRM |
+| 5986 | WinRM HTTPS |
+| 88 | Kerberos |
+| 389 | LDAP |
+| 636 | LDAPS |
+| 3268 | Global Catalog |
+| 3269 | Global Catalog SSL |
+| 53 | DNS |
+| 135 | MSRPC |
+| 1433 | MSSQL |
+
+## Quick Nmap Scan
 
 ```bash
-nmap <IP>
+nmap -p 53,88,123,135,137,138,139,161,389,445,464,636,3268,3269,1433,1434,3389,5985,5986 <IP>
 ```
 
-### Service and version detection
+## Important Notes
 
-```bash
-nmap -sC -sV <IP>
-```
+- **SMB (445):** shares, authentication, domain enumeration and remote administration.
+- **RPC (135):** Windows remote procedure calls and service communication.
+- **Kerberos (88):** Active Directory authentication.
+- **LDAP (389):** users, groups, computers and domain information.
+- **DNS (53):** domain controller and service discovery.
+- **RDP (3389):** interactive remote desktop access.
+- **WinRM (5985/5986):** remote PowerShell access.
+- **MSSQL (1433):** database access and potential application-related attack paths.
 
-### Scan all TCP ports
-
-```bash
-nmap -p- --min-rate 1000 <IP>
-```
-
-### Scan specific ports
-
-```bash
-nmap -p 21,22,53,80,88,135,139,389,443,445,1433,3389,5985,5986 <IP>
-```
-
-### UDP scan
-
-```bash
-sudo nmap -sU --top-ports 100 <IP>
-```
-
-### Save results
-
-```bash
-nmap -sC -sV -oN scan.txt <IP>
-```
-
----
+An open port is an enumeration opportunity, not proof of a vulnerability.
 
 ## 2. SMB — Server Message Block
 
